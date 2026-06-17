@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 import axios from 'axios'
 
 const API_URL = import.meta.env.VITE_API_URL || '/api'
@@ -30,7 +32,6 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      // Clear auth and redirect to login
       localStorage.removeItem('moltbook-auth')
       window.location.href = '/login'
     }

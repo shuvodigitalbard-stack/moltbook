@@ -1,6 +1,6 @@
 import { Outlet, Navigate } from 'react-router-dom'
-import { useAuthStore } from '../stores/auth'
-import Sidebar from '../components/layout/Sidebar'
+import { useAuthStore } from '../../stores/auth'
+import Sidebar from './Sidebar'
 
 export default function ProtectedLayout() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
