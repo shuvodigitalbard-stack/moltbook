@@ -1,15 +1,14 @@
-// Agent Routes
+// Agent Routes - SQLite version
 import { Router, Response } from 'express';
 import { agentService } from '../services/agent.service';
 import { authenticate, requireAuth, AuthRequest } from '../middleware/auth.middleware';
-import { rateLimiter } from '../middleware/rate.middleware';
 
 const router = Router();
 router.use(authenticate);
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const agents = await agentService.getByTeam(req.user!.teamId.toString());
+    const agents = await agentService.getByTeam(req.user!.team_id);
     res.json({ agents });
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to fetch agents' });
@@ -20,8 +19,8 @@ router.post('/', requireAuth('admin', 'architect'), async (req: AuthRequest, res
   try {
     const agent = await agentService.create({
       ...req.body,
-      teamId: req.user!.teamId.toString(),
-      userId: req.userId!,
+      teamId: req.user!.team_id,
+      userId: req.user!.id,
     });
     res.status(201).json({ agent });
   } catch (error: unknown) {
@@ -44,7 +43,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
 router.put('/:id', requireAuth('admin', 'architect'), async (req: AuthRequest, res: Response) => {
   try {
-    const agent = await agentService.update(req.params.id, req.body, req.userId!);
+    const agent = await agentService.update(req.params.id, req.body, req.user!.id);
     if (!agent) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -57,7 +56,7 @@ router.put('/:id', requireAuth('admin', 'architect'), async (req: AuthRequest, r
 
 router.delete('/:id', requireAuth('admin', 'architect'), async (req: AuthRequest, res: Response) => {
   try {
-    const deleted = await agentService.delete(req.params.id, req.userId!);
+    const deleted = await agentService.delete(req.params.id, req.user!.id);
     if (!deleted) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -71,7 +70,7 @@ router.delete('/:id', requireAuth('admin', 'architect'), async (req: AuthRequest
 router.post('/:id/versions', requireAuth('admin', 'architect'), async (req: AuthRequest, res: Response) => {
   try {
     const { tag } = req.body;
-    const agent = await agentService.saveVersion(req.params.id, tag || 'draft', req.userId!);
+    const agent = await agentService.saveVersion(req.params.id, tag || 'draft', req.user!.id);
     if (!agent) {
       res.status(404).json({ error: 'Agent not found' });
       return;

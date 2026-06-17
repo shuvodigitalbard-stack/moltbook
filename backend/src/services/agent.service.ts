@@ -1,7 +1,5 @@
-// Agent Service
-import { Agent, IAgent, IAgentVersion } from '../models/Agent';
-import { createAuditLog } from '../models/AuditLog';
-import mongoose from 'mongoose';
+// Agent Service - SQLite version
+import { getDB, getOne, getAll, run, genId, saveDB } from '../utils/db';
 
 export interface CreateAgentInput {
   name: string;
@@ -10,11 +8,7 @@ export interface CreateAgentInput {
   model: string;
   systemPrompt?: string;
   tools?: string[];
-  parameters?: {
-    temperature?: number;
-    maxTokens?: number;
-    topP?: number;
-  };
+  parameters?: { temperature?: number; maxTokens?: number; topP?: number };
   teamId: string;
   userId: string;
 }
@@ -24,155 +18,116 @@ export interface UpdateAgentInput extends Partial<CreateAgentInput> {
 }
 
 export class AgentService {
-  /**
-   * Create a new agent
-   */
-  async create(input: CreateAgentInput): Promise<IAgent> {
-    const agent = await Agent.create({
-      ...input,
-      description: input.description || '',
+  async create(input: CreateAgentInput): Promise<any> {
+    const db = await getDB();
+    const id = genId();
+    const params = {
+      temperature: input.parameters?.temperature ?? 0.7,
+      maxTokens: input.parameters?.maxTokens ?? 2048,
+      topP: input.parameters?.topP ?? 1.0,
+    };
+    const versions = [{
       systemPrompt: input.systemPrompt || '',
+      parameters: params,
       tools: input.tools || [],
-      parameters: {
-        temperature: input.parameters?.temperature ?? 0.7,
-        maxTokens: input.parameters?.maxTokens ?? 2048,
-        topP: input.parameters?.topP ?? 1.0,
-      },
-      createdBy: input.userId,
-      versions: [{
-        systemPrompt: input.systemPrompt || '',
-        parameters: {
-          temperature: input.parameters?.temperature ?? 0.7,
-          maxTokens: input.parameters?.maxTokens ?? 2048,
-          topP: input.parameters?.topP ?? 1.0,
-        },
-        tools: input.tools || [],
-        tag: 'v1-draft',
-        createdAt: new Date(),
-      }],
+      tag: 'v1-draft',
+      createdAt: new Date().toISOString(),
+    }];
+
+    run(db, `INSERT INTO agents (id, name, description, team_id, provider, model, system_prompt, tools, parameters, versions, status, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.name, input.description || '', input.teamId, input.provider, input.model,
+       input.systemPrompt || '', JSON.stringify(input.tools || []), JSON.stringify(params),
+       JSON.stringify(versions), 'active', input.userId]);
+
+    saveDB(db);
+    return this.getById(id);
+  }
+
+  async getByTeam(teamId: string, status?: string): Promise<any[]> {
+    const db = await getDB();
+    if (status) return getAll(db, 'SELECT * FROM agents WHERE team_id = ? AND status = ? ORDER BY updated_at DESC', [teamId, status]);
+    return getAll(db, 'SELECT * FROM agents WHERE team_id = ? ORDER BY updated_at DESC', [teamId]);
+  }
+
+  async getById(agentId: string): Promise<any | null> {
+    const db = await getDB();
+    return getOne(db, 'SELECT * FROM agents WHERE id = ?', [agentId]);
+  }
+
+  async update(agentId: string, input: UpdateAgentInput, userId: string): Promise<any | null> {
+    const db = await getDB();
+    const agent = getOne(db, 'SELECT * FROM agents WHERE id = ?', [agentId]);
+    if (!agent) return null;
+
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    if (input.name) { updates.push('name = ?'); params.push(input.name); }
+    if (input.description !== undefined) { updates.push('description = ?'); params.push(input.description); }
+    if (input.provider) { updates.push('provider = ?'); params.push(input.provider); }
+    if (input.model) { updates.push('model = ?'); params.push(input.model); }
+    if (input.systemPrompt) { updates.push('system_prompt = ?'); params.push(input.systemPrompt); }
+    if (input.tools) { updates.push('tools = ?'); params.push(JSON.stringify(input.tools)); }
+    if (input.status) { updates.push('status = ?'); params.push(input.status); }
+
+    if (input.parameters) {
+      const current = JSON.parse(agent.parameters as string);
+      const merged = { ...current, ...input.parameters };
+      updates.push('parameters = ?');
+      params.push(JSON.stringify(merged));
+    }
+
+    // Save version if config changed
+    if (input.systemPrompt || input.parameters || input.tools) {
+      const versions = JSON.parse(agent.versions as string);
+      const currentParams = JSON.parse(agent.parameters as string);
+      versions.push({
+        systemPrompt: input.systemPrompt || (agent.system_prompt as string),
+        parameters: input.parameters ? { ...currentParams, ...input.parameters } : currentParams,
+        tools: input.tools || JSON.parse(agent.tools as string),
+        tag: `v${versions.length + 1}`,
+        createdAt: new Date().toISOString(),
+      });
+      updates.push('versions = ?');
+      params.push(JSON.stringify(versions));
+    }
+
+    updates.push("updated_at = datetime('now')");
+    params.push(agentId);
+    run(db, `UPDATE agents SET ${updates.join(', ')} WHERE id = ?`, params);
+    saveDB(db);
+
+    return this.getById(agentId);
+  }
+
+  async delete(agentId: string, userId: string): Promise<boolean> {
+    const db = await getDB();
+    run(db, 'DELETE FROM agents WHERE id = ?', [agentId]);
+    saveDB(db);
+    return true;
+  }
+
+  async saveVersion(agentId: string, tag: string, userId: string): Promise<any | null> {
+    const db = await getDB();
+    const agent = getOne(db, 'SELECT * FROM agents WHERE id = ?', [agentId]);
+    if (!agent) return null;
+
+    const versions = JSON.parse(agent.versions as string);
+    const params = JSON.parse(agent.parameters as string);
+    versions.push({
+      systemPrompt: agent.system_prompt as string,
+      parameters: params,
+      tools: JSON.parse(agent.tools as string),
+      tag,
+      createdAt: new Date().toISOString(),
     });
 
-    await createAuditLog(
-      new mongoose.Types.ObjectId(input.userId),
-      'agent.create',
-      'Agent',
-      agent._id,
-      { name: input.name, provider: input.provider }
-    );
+    run(db, "UPDATE agents SET versions = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(versions), agentId]);
+    saveDB(db);
 
-    return agent;
-  }
-
-  /**
-   * Get all agents for a team
-   */
-  async getByTeam(teamId: string, status?: string): Promise<IAgent[]> {
-    const query: Record<string, unknown> = { teamId };
-    if (status) query.status = status;
-    return Agent.find(query).sort({ updatedAt: -1 });
-  }
-
-  /**
-   * Get single agent by ID
-   */
-  async getById(agentId: string): Promise<IAgent | null> {
-    return Agent.findById(agentId);
-  }
-
-  /**
-   * Update agent
-   */
-  async update(
-    agentId: string,
-    input: UpdateAgentInput,
-    userId: string
-  ): Promise<IAgent | null> {
-    const agent = await Agent.findById(agentId);
-    if (!agent) return null;
-
-    // Save current config as version before updating
-    if (input.systemPrompt || input.parameters || input.tools) {
-      const newVersion: IAgentVersion = {
-        systemPrompt: input.systemPrompt || agent.systemPrompt,
-        parameters: {
-          temperature: input.parameters?.temperature ?? agent.parameters.temperature,
-          maxTokens: input.parameters?.maxTokens ?? agent.parameters.maxTokens,
-          topP: input.parameters?.topP ?? agent.parameters.topP,
-        },
-        tools: input.tools || agent.tools,
-        tag: `v${agent.versions.length + 1}`,
-        createdAt: new Date(),
-      };
-      agent.versions.push(newVersion);
-    }
-
-    // Update fields
-    if (input.name) agent.name = input.name;
-    if (input.description !== undefined) agent.description = input.description;
-    if (input.provider) agent.provider = input.provider;
-    if (input.model) agent.model = input.model;
-    if (input.systemPrompt) agent.systemPrompt = input.systemPrompt;
-    if (input.tools) agent.tools = input.tools;
-    if (input.parameters) {
-      if (input.parameters.temperature !== undefined) agent.parameters.temperature = input.parameters.temperature;
-      if (input.parameters.maxTokens !== undefined) agent.parameters.maxTokens = input.parameters.maxTokens;
-      if (input.parameters.topP !== undefined) agent.parameters.topP = input.parameters.topP;
-    }
-    if (input.status) agent.status = input.status;
-
-    await agent.save();
-
-    await createAuditLog(
-      new mongoose.Types.ObjectId(userId),
-      'agent.update',
-      'Agent',
-      agent._id,
-      { name: agent.name }
-    );
-
-    return agent;
-  }
-
-  /**
-   * Delete agent
-   */
-  async delete(agentId: string, userId: string): Promise<boolean> {
-    const result = await Agent.findByIdAndDelete(agentId);
-    if (result) {
-      await createAuditLog(
-        new mongoose.Types.ObjectId(userId),
-        'agent.delete',
-        'Agent',
-        new mongoose.Types.ObjectId(agentId),
-        { name: result.name }
-      );
-    }
-    return !!result;
-  }
-
-  /**
-   * Save agent version
-   */
-  async saveVersion(
-    agentId: string,
-    tag: string,
-    userId: string
-  ): Promise<IAgent | null> {
-    const agent = await Agent.findById(agentId);
-    if (!agent) return null;
-
-    const newVersion: IAgentVersion = {
-      systemPrompt: agent.systemPrompt,
-      parameters: { ...agent.parameters },
-      tools: [...agent.tools],
-      tag,
-      createdAt: new Date(),
-    };
-
-    agent.versions.push(newVersion);
-    await agent.save();
-
-    return agent;
+    return this.getById(agentId);
   }
 }
 

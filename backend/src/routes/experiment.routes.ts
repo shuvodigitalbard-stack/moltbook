@@ -1,4 +1,4 @@
-// Experiment Routes
+// Experiment Routes - SQLite version
 import { Router, Response } from 'express';
 import { experimentService } from '../services/experiment.service';
 import { authenticate, requireAuth, AuthRequest } from '../middleware/auth.middleware';
@@ -8,7 +8,7 @@ router.use(authenticate);
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const experiments = await experimentService.getByTeam(req.user!.teamId.toString());
+    const experiments = await experimentService.getByTeam(req.user!.team_id);
     res.json({ experiments });
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed' });
@@ -19,8 +19,8 @@ router.post('/', requireAuth('admin', 'architect'), async (req: AuthRequest, res
   try {
     const experiment = await experimentService.create({
       ...req.body,
-      teamId: req.user!.teamId.toString(),
-      userId: req.userId!,
+      teamId: req.user!.team_id,
+      userId: req.user!.id,
     });
     res.status(201).json({ experiment });
   } catch (error: unknown) {

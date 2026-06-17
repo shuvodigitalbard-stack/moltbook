@@ -1,7 +1,5 @@
-// Analytics Service
-import { Session } from '../models/Session';
-import { Task } from '../models/Task';
-import { Agent } from '../models/Agent';
+// Analytics Service - SQLite version
+import { getDB, getAll, getOne } from '../utils/db';
 
 export interface UsageAnalytics {
   dailyTokens: { date: string; openai: number; anthropic: number; openrouter: number }[];
@@ -13,84 +11,54 @@ export interface UsageAnalytics {
 
 export class AnalyticsService {
   async getUsage(teamId: string, days: number = 30): Promise<UsageAnalytics> {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    const db = await getDB();
+    const agents = getAll(db, 'SELECT * FROM agents WHERE team_id = ?', [teamId]);
+    if (agents.length === 0) {
+      return { dailyTokens: [], costPerAgent: [], sessionsOverTime: [], providerDistribution: [], topSessions: [] };
+    }
 
-    // Get all sessions for the team's agents
-    const agents = await Agent.find({ teamId });
-    const agentIds = agents.map(a => a._id);
-    const agentMap = new Map(agents.map(a => [a._id.toString(), a.name]));
+    const agentIds = agents.map(a => a.id);
+    const placeholders = agentIds.map(() => '?').join(',');
+    const sessions = getAll(db, `SELECT * FROM sessions WHERE agent_id IN (${placeholders})`, agentIds);
 
-    const sessions = await Session.find({
-      agentId: { $in: agentIds },
-      createdAt: { $gte: startDate },
-    });
-
-    // Daily tokens by provider
-    const dailyTokensMap = new Map<string, { openai: number; anthropic: number; openrouter: number }>();
+    const dailyTokensMap = new Map<string, any>();
     const sessionsByDate = new Map<string, number>();
     const costByAgent = new Map<string, number>();
     const providerCount = new Map<string, number>();
 
     for (const session of sessions) {
-      const date = session.createdAt.toISOString().split('T')[0];
-      const agentId = session.agentId.toString();
-      const agent = agents.find(a => a._id.toString() === agentId);
+      const date = (session.created_at as string)?.split('T')[0] || '';
+      const agent = agents.find(a => a.id === session.agent_id);
       const provider = agent?.provider || 'unknown';
 
-      // Daily tokens
       const existing = dailyTokensMap.get(date) || { openai: 0, anthropic: 0, openrouter: 0 };
-      existing[provider as keyof typeof existing] = (existing[provider as keyof typeof existing] || 0) + session.tokenUsage.total;
+      const tokens = JSON.parse(session.token_usage as string);
+      existing[provider] = (existing[provider] || 0) + (tokens.total || 0);
       dailyTokensMap.set(date, existing);
 
-      // Sessions over time
       sessionsByDate.set(date, (sessionsByDate.get(date) || 0) + 1);
-
-      // Cost per agent
-      costByAgent.set(agentId, (costByAgent.get(agentId) || 0) + session.cost);
-
-      // Provider distribution
+      costByAgent.set(session.agent_id as string, (costByAgent.get(session.agent_id as string) || 0) + (session.cost || 0));
       providerCount.set(provider, (providerCount.get(provider) || 0) + 1);
     }
 
-    // Format results
-    const dailyTokens = Array.from(dailyTokensMap.entries()).map(([date, tokens]) => ({
-      date,
-      ...tokens,
-    }));
-
-    const costPerAgent = Array.from(costByAgent.entries()).map(([agentId, cost]) => ({
-      agentId,
-      agentName: agentMap.get(agentId) || 'Unknown',
-      cost: Math.round(cost * 100) / 100,
-    }));
-
-    const sessionsOverTime = Array.from(sessionsByDate.entries()).map(([date, count]) => ({
-      date,
-      count,
-    }));
-
-    const providerDistribution = Array.from(providerCount.entries()).map(([provider, count]) => ({
-      provider,
-      count,
-    }));
-
-    const topSessions = sessions
-      .sort((a, b) => b.cost - a.cost)
-      .slice(0, 10)
-      .map(s => ({
-        sessionId: s._id.toString(),
-        agentName: agentMap.get(s.agentId.toString()) || 'Unknown',
-        cost: s.cost,
-        tokens: s.tokenUsage.total,
-      }));
+    const agentMap = new Map(agents.map(a => [a.id, a.name]));
 
     return {
-      dailyTokens,
-      costPerAgent,
-      sessionsOverTime,
-      providerDistribution,
-      topSessions,
+      dailyTokens: Array.from(dailyTokensMap.entries()).map(([date, tokens]) => ({ date, ...tokens })),
+      costPerAgent: Array.from(costByAgent.entries()).map(([agentId, cost]) => ({
+        agentId, agentName: agentMap.get(agentId) || 'Unknown', cost: Math.round(cost * 100) / 100,
+      })),
+      sessionsOverTime: Array.from(sessionsByDate.entries()).map(([date, count]) => ({ date, count })),
+      providerDistribution: Array.from(providerCount.entries()).map(([provider, count]) => ({ provider, count })),
+      topSessions: sessions
+        .sort((a: any, b: any) => (b.cost || 0) - (a.cost || 0))
+        .slice(0, 10)
+        .map((s: any) => ({
+          sessionId: s.id,
+          agentName: agentMap.get(s.agent_id) || 'Unknown',
+          cost: s.cost || 0,
+          tokens: JSON.parse(s.token_usage).total || 0,
+        })),
     };
   }
 }

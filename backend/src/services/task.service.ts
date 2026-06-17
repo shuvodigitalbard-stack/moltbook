@@ -1,7 +1,5 @@
-// Task Service
-import { Task, ITask } from '../models/Task';
-import { createAuditLog } from '../models/AuditLog';
-import mongoose from 'mongoose';
+// Task Service - SQLite version
+import { getDB, getOne, getAll, run, genId, saveDB } from '../utils/db';
 
 export interface CreateTaskInput {
   title: string;
@@ -15,52 +13,55 @@ export interface CreateTaskInput {
 }
 
 export class TaskService {
-  async create(input: CreateTaskInput): Promise<ITask> {
-    const task = await Task.create({
-      ...input,
-      referenceFiles: input.referenceFiles || [],
-      priority: input.priority || 'normal',
-      status: 'pending',
-      output: '',
-      createdBy: input.userId,
-    });
-
-    await createAuditLog(
-      new mongoose.Types.ObjectId(input.userId),
-      'task.create',
-      'Task',
-      task._id,
-      { title: input.title, type: input.type }
-    );
-
-    return task;
+  async create(input: CreateTaskInput): Promise<any> {
+    const db = await getDB();
+    const id = genId();
+    run(db, `INSERT INTO tasks (id, team_id, title, type, input_text, reference_files, assigned_agent, priority, status, output, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.teamId, input.title, input.type, input.inputText,
+       JSON.stringify(input.referenceFiles || []), input.assignedAgent,
+       input.priority || 'normal', 'pending', '', input.userId]);
+    saveDB(db);
+    return this.getById(id);
   }
 
-  async getByTeam(teamId: string, status?: string): Promise<ITask[]> {
-    const query: Record<string, unknown> = { teamId };
-    if (status) query.status = status;
-    return Task.find(query).sort({ createdAt: -1 });
+  async getByTeam(teamId: string, status?: string): Promise<any[]> {
+    const db = await getDB();
+    if (status) return getAll(db, 'SELECT * FROM tasks WHERE team_id = ? AND status = ? ORDER BY created_at DESC', [teamId, status]);
+    return getAll(db, 'SELECT * FROM tasks WHERE team_id = ? ORDER BY created_at DESC', [teamId]);
   }
 
-  async getById(taskId: string): Promise<ITask | null> {
-    return Task.findById(taskId);
+  async getById(taskId: string): Promise<any | null> {
+    const db = await getDB();
+    return getOne(db, 'SELECT * FROM tasks WHERE id = ?', [taskId]);
   }
 
-  async updateStatus(taskId: string, status: ITask['status'], userId: string): Promise<ITask | null> {
-    const update: Record<string, unknown> = { status };
+  async updateStatus(taskId: string, status: string, userId: string): Promise<any | null> {
+    const db = await getDB();
     if (status === 'approved') {
-      update.approvedBy = new mongoose.Types.ObjectId(userId);
+      run(db, "UPDATE tasks SET status = ?, approved_by = ?, updated_at = datetime('now') WHERE id = ?",
+        [status, userId, taskId]);
+    } else {
+      run(db, "UPDATE tasks SET status = ?, updated_at = datetime('now') WHERE id = ?",
+        [status, taskId]);
     }
-    return Task.findByIdAndUpdate(taskId, update, { new: true });
+    saveDB(db);
+    return this.getById(taskId);
   }
 
-  async updateOutput(taskId: string, output: string): Promise<ITask | null> {
-    return Task.findByIdAndUpdate(taskId, { output, status: 'review' }, { new: true });
+  async updateOutput(taskId: string, output: string): Promise<any | null> {
+    const db = await getDB();
+    run(db, "UPDATE tasks SET output = ?, status = 'review', updated_at = datetime('now') WHERE id = ?",
+      [output, taskId]);
+    saveDB(db);
+    return this.getById(taskId);
   }
 
   async delete(taskId: string): Promise<boolean> {
-    const result = await Task.findByIdAndDelete(taskId);
-    return !!result;
+    const db = await getDB();
+    run(db, 'DELETE FROM tasks WHERE id = ?', [taskId]);
+    saveDB(db);
+    return true;
   }
 }
 

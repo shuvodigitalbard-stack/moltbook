@@ -5,5 +5,3 @@ export * from './session.service';
 export * from './task.service';
 export * from './experiment.service';
 export * from './analytics.service';
-export * from './llm/llm.service';
-export * from './memory.service';

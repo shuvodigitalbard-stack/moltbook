@@ -1,11 +1,10 @@
-// MoltBook Backend - Main Entry Point
+// MoltBook Backend - Main Entry Point (SQLite version)
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { createServer } from 'http';
 import { Server as SocketServer } from 'socket.io';
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 
 import authRoutes from './routes/auth.routes';
@@ -16,7 +15,7 @@ import experimentRoutes from './routes/experiment.routes';
 import analyticsRoutes from './routes/analytics.routes';
 import adminRoutes from './routes/admin.routes';
 import { errorHandler } from './middleware/error.middleware';
-import { connectDB } from './utils/db';
+import { getDB } from './utils/db';
 import { logger } from './utils/logger';
 
 dotenv.config();
@@ -57,12 +56,26 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    db: mongoose.connection.readyState === 1,
-    timestamp: new Date().toISOString(),
-  });
+app.get('/api/health', async (req, res) => {
+  try {
+    const db = await getDB();
+    const users = db.exec('SELECT COUNT(*) as count FROM users');
+    const agents = db.exec('SELECT COUNT(*) as count FROM agents');
+    const sessions = db.exec('SELECT COUNT(*) as count FROM sessions');
+    res.json({
+      status: 'ok',
+      database: 'sqlite',
+      connected: true,
+      stats: {
+        users: (users[0]?.values?.[0]?.[0] as number) || 0,
+        agents: (agents[0]?.values?.[0]?.[0] as number) || 0,
+        sessions: (sessions[0]?.values?.[0]?.[0] as number) || 0,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: 'Database error' });
+  }
 });
 
 // Error handler
@@ -76,7 +89,7 @@ io.use(async (socket, next) => {
       return next(new Error('Authentication required'));
     }
     const jwt = require('jsonwebtoken');
-    const decoded = jwt.verify(token, process.env.JWT_PUBLIC_KEY || process.env.JWT_SECRET || 'dev-secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'moltbook-dev-secret-change-in-production');
     socket.data.user = decoded;
     next();
   } catch (err) {
@@ -107,7 +120,9 @@ const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
   try {
-    await connectDB();
+    await getDB(); // Initialize SQLite database
+    logger.info('SQLite database ready');
+    
     httpServer.listen(PORT, () => {
       logger.info(`MoltBook server running on port ${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);

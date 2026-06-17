@@ -15,8 +15,8 @@
     "express": "^4.21.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.6.0",
     "morgan": "^1.10.0",
+    "sql.js": "^1.10.3",
     "socket.io": "^4.7.5",
     "winston": "^3.14.0"
   },

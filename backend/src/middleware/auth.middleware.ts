@@ -1,11 +1,20 @@
-// Authentication Middleware
+// Authentication Middleware - SQLite version
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../utils/config';
-import { User, IUser } from '../models/User';
+import { getDB, getOne } from '../utils/db';
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  team_id: string;
+  is_active: number;
+}
 
 export interface AuthRequest extends Request {
-  user?: IUser;
+  user?: AuthUser;
   userId?: string;
 }
 
@@ -28,14 +37,22 @@ export const authenticate = async (
       teamId: string;
     };
 
-    const user = await User.findById(decoded.userId).select('-passwordHash');
-    if (!user || !user.isActive) {
+    const db = await getDB();
+    const user = getOne(db, 'SELECT id, email, name, role, team_id, is_active FROM users WHERE id = ?', [decoded.userId]);
+    if (!user || !user.is_active) {
       res.status(401).json({ error: 'User not found or inactive' });
       return;
     }
 
-    req.user = user;
-    req.userId = decoded.userId;
+    req.user = {
+      id: user.id as string,
+      email: user.email as string,
+      name: user.name as string,
+      role: user.role as string,
+      team_id: user.team_id as string,
+      is_active: user.is_active as number,
+    };
+    req.userId = user.id as string;
     next();
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {

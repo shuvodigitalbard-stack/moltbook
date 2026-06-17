@@ -1,4 +1,4 @@
-// Auth Routes
+// Auth Routes - SQLite version
 import { Router, Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
@@ -15,12 +15,7 @@ router.post('/register', rateLimiter(5, 60000), async (req: Request, res: Respon
     }
     const result = await authService.register({ email, password, name, inviteCode }, req.ip);
     res.status(201).json({
-      user: {
-        id: result.user._id,
-        email: result.user.email,
-        name: result.user.name,
-        role: result.user.role,
-      },
+      user: result.user,
       tokens: result.tokens,
     });
   } catch (error: unknown) {
@@ -38,12 +33,7 @@ router.post('/login', rateLimiter(10, 60000), async (req: Request, res: Response
     }
     const result = await authService.login({ email, password }, req.ip);
     res.json({
-      user: {
-        id: result.user._id,
-        email: result.user.email,
-        name: result.user.name,
-        role: result.user.role,
-      },
+      user: result.user,
       tokens: result.tokens,
     });
   } catch (error: unknown) {
@@ -72,15 +62,7 @@ router.post('/logout', authenticate, async (req: AuthRequest, res: Response) => 
 });
 
 router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
-  res.json({
-    user: {
-      id: req.user?._id,
-      email: req.user?.email,
-      name: req.user?.name,
-      role: req.user?.role,
-      teamId: req.user?.teamId,
-    },
-  });
+  res.json({ user: req.user });
 });
 
 export default router;

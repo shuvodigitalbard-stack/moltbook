@@ -1,9 +1,5 @@
-// Session Service
-import { Session, ISession } from '../models/Session';
-import { Agent } from '../models/Agent';
-import { Experiment } from '../models/Experiment';
-import { createAuditLog } from '../models/AuditLog';
-import mongoose from 'mongoose';
+// Session Service - SQLite version
+import { getDB, getOne, getAll, run, genId, saveDB } from '../utils/db';
 
 export interface RunAgentInput {
   agentId: string;
@@ -13,223 +9,134 @@ export interface RunAgentInput {
 }
 
 export class SessionService {
-  /**
-   * Create a new session or continue existing
-   */
-  async createSession(input: RunAgentInput): Promise<ISession> {
-    const agent = await Agent.findById(input.agentId);
+  async createSession(input: RunAgentInput): Promise<any> {
+    const db = await getDB();
+    const agent = getOne(db, 'SELECT * FROM agents WHERE id = ?', [input.agentId]);
     if (!agent) throw new Error('Agent not found');
 
-    // Check for active experiment
-    let experimentId: mongoose.Types.ObjectId | undefined;
-    let variant: 'A' | 'B' | undefined;
+    const id = genId();
+    const messages = [
+      { role: 'system', content: agent.system_prompt, timestamp: new Date().toISOString() },
+      { role: 'user', content: input.message, timestamp: new Date().toISOString() },
+    ];
 
-    const activeExperiment = await Experiment.findOne({
-      $or: [{ agentA: input.agentId }, { agentB: input.agentId }],
-      status: 'running',
-    });
+    run(db, `INSERT INTO sessions (id, agent_id, user_id, messages, status, started_at)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, input.agentId, input.userId, JSON.stringify(messages), 'pending', new Date().toISOString()]);
 
-    if (activeExperiment) {
-      experimentId = activeExperiment._id;
-      if (activeExperiment.agentA.toString() === input.agentId) {
-        variant = 'A';
-      } else {
-        variant = 'B';
-      }
-    }
-
-    const session = await Session.create({
-      agentId: input.agentId,
-      userId: input.userId,
-      messages: [
-        { role: 'system', content: agent.systemPrompt, timestamp: new Date() },
-        { role: 'user', content: input.message, timestamp: new Date() },
-      ],
-      status: 'pending',
-      experimentId,
-      variant,
-      startedAt: new Date(),
-    });
-
-    await createAuditLog(
-      new mongoose.Types.ObjectId(input.userId),
-      'session.create',
-      'Session',
-      session._id,
-      { agentId: input.agentId }
-    );
-
-    return session;
+    saveDB(db);
+    return this.getById(id);
   }
 
-  /**
-   * Get session by ID
-   */
-  async getById(sessionId: string): Promise<ISession | null> {
-    return Session.findById(sessionId);
+  async getById(sessionId: string): Promise<any | null> {
+    const db = await getDB();
+    return getOne(db, 'SELECT * FROM sessions WHERE id = ?', [sessionId]);
   }
 
-  /**
-   * Get sessions by user
-   */
-  async getByUser(userId: string, limit: number = 20): Promise<ISession[]> {
-    return Session.find({ userId })
-      .sort({ createdAt: -1 })
-      .limit(limit);
+  async getByUser(userId: string, limit: number = 20): Promise<any[]> {
+    const db = await getDB();
+    return getAll(db, 'SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?', [userId, limit]);
   }
 
-  /**
-   * Get active sessions
-   */
-  async getActive(teamId: string): Promise<ISession[]> {
-    return Session.find({ status: { $in: ['running', 'pending', 'paused'] } })
-      .sort({ createdAt: -1 });
+  async getActive(teamId: string): Promise<any[]> {
+    const db = await getDB();
+    return getAll(db, `SELECT s.* FROM sessions s
+      JOIN agents a ON s.agent_id = a.id
+      WHERE a.team_id = ? AND s.status IN ('running', 'pending', 'paused')
+      ORDER BY s.created_at DESC`, [teamId]);
   }
 
-  /**
-   * Update session status
-   */
-  async updateStatus(
-    sessionId: string,
-    status: 'pending' | 'running' | 'completed' | 'failed' | 'paused'
-  ): Promise<ISession | null> {
-    const update: Record<string, unknown> = { status };
+  async updateStatus(sessionId: string, status: string): Promise<any | null> {
+    const db = await getDB();
+    let updates = "status = ?, updated_at = datetime('now')";
+    const params: any[] = [status];
     if (status === 'completed' || status === 'failed') {
-      update.completedAt = new Date();
+      updates += ", completed_at = datetime('now')";
     }
-    return Session.findByIdAndUpdate(sessionId, update, { new: true });
+    params.push(sessionId);
+    run(db, `UPDATE sessions SET ${updates} WHERE id = ?`, params);
+    saveDB(db);
+    return this.getById(sessionId);
   }
 
-  /**
-   * Update session tokens and cost
-   */
-  async updateUsage(
-    sessionId: string,
-    tokenUsage: { prompt: number; completion: number; total: number },
-    cost: number
-  ): Promise<void> {
-    await Session.findByIdAndUpdate(sessionId, {
-      tokenUsage,
-      cost,
-    });
+  async updateUsage(sessionId: string, tokenUsage: any, cost: number): Promise<void> {
+    const db = await getDB();
+    run(db, "UPDATE sessions SET token_usage = ?, cost = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(tokenUsage), cost, sessionId]);
+    saveDB(db);
   }
 
-  /**
-   * Add message to session
-   */
-  async addMessage(
-    sessionId: string,
-    message: { role: string; content: string; toolCallId?: string; toolName?: string }
-  ): Promise<ISession | null> {
-    return Session.findByIdAndUpdate(
-      sessionId,
-      { $push: { messages: { ...message, timestamp: new Date() } } },
-      { new: true }
-    );
+  async addMessage(sessionId: string, message: any): Promise<any | null> {
+    const db = await getDB();
+    const session = getOne(db, 'SELECT messages FROM sessions WHERE id = ?', [sessionId]);
+    if (!session) return null;
+    const messages = JSON.parse(session.messages as string);
+    messages.push({ ...message, timestamp: new Date().toISOString() });
+    run(db, "UPDATE sessions SET messages = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(messages), sessionId]);
+    saveDB(db);
+    return this.getById(sessionId);
   }
 
-  /**
-   * Inject prompt into running session
-   */
-  async injectPrompt(
-    sessionId: string,
-    injectionText: string,
-    injectionRole: 'system' | 'user',
-    userId: string
-  ): Promise<ISession | null> {
-    const session = await Session.findByIdAndUpdate(
-      sessionId,
-      {
-        $push: {
-          messages: {
-            role: injectionRole,
-            content: injectionText,
-            timestamp: new Date(),
-          },
-          injections: {
-            text: injectionText,
-            role: injectionRole,
-            injectedBy: new mongoose.Types.ObjectId(userId),
-            timestamp: new Date(),
-          },
-        },
-      },
-      { new: true }
-    );
-
-    if (session) {
-      await createAuditLog(
-        new mongoose.Types.ObjectId(userId),
-        'session.inject',
-        'Session',
-        new mongoose.Types.ObjectId(sessionId),
-        { injectionText: injectionText.substring(0, 100) }
-      );
-    }
-
-    return session;
-  }
-
-  /**
-   * Update session memory
-   */
-  async updateMemory(
-    sessionId: string,
-    key: string,
-    value: unknown,
-    scope: 'agent' | 'session' | 'user'
-  ): Promise<ISession | null> {
-    const session = await Session.findById(sessionId);
+  async injectPrompt(sessionId: string, injectionText: string, injectionRole: string, userId: string): Promise<any | null> {
+    const db = await getDB();
+    const session = getOne(db, 'SELECT * FROM sessions WHERE id = ?', [sessionId]);
     if (!session) return null;
 
-    session.memory[key] = { value, scope, updatedAt: new Date() };
-    await session.save();
-    return session;
+    const messages = JSON.parse(session.messages as string);
+    messages.push({ role: injectionRole, content: injectionText, timestamp: new Date().toISOString() });
+
+    const injections = JSON.parse(session.injections as string);
+    injections.push({ text: injectionText, role: injectionRole, injectedBy: userId, timestamp: new Date().toISOString() });
+
+    run(db, "UPDATE sessions SET messages = ?, injections = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(messages), JSON.stringify(injections), sessionId]);
+    saveDB(db);
+    return this.getById(sessionId);
   }
 
-  /**
-   * Get session memory
-   */
+  async updateMemory(sessionId: string, key: string, value: unknown, scope: string): Promise<any | null> {
+    const db = await getDB();
+    const session = getOne(db, 'SELECT memory FROM sessions WHERE id = ?', [sessionId]);
+    if (!session) return null;
+    const memory = JSON.parse(session.memory as string);
+    memory[key] = { value, scope, updatedAt: new Date().toISOString() };
+    run(db, "UPDATE sessions SET memory = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(memory), sessionId]);
+    saveDB(db);
+    return this.getById(sessionId);
+  }
+
   async getMemory(sessionId: string): Promise<Record<string, unknown>> {
-    const session = await Session.findById(sessionId);
-    return session?.memory || {};
+    const db = await getDB();
+    const session = getOne(db, 'SELECT memory FROM sessions WHERE id = ?', [sessionId]);
+    if (!session) return {};
+    return JSON.parse(session.memory as string);
   }
 
-  /**
-   * Update session context (full messages array)
-   */
-  async updateContext(
-    sessionId: string,
-    messages: Array<{ role: string; content: string }>
-  ): Promise<ISession | null> {
-    return Session.findByIdAndUpdate(
-      sessionId,
-      { messages: messages.map(m => ({ ...m, timestamp: new Date() })) },
-      { new: true }
-    );
+  async updateContext(sessionId: string, messages: any[]): Promise<any | null> {
+    const db = await getDB();
+    const msgs = messages.map(m => ({ ...m, timestamp: new Date().toISOString() }));
+    run(db, "UPDATE sessions SET messages = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(msgs), sessionId]);
+    saveDB(db);
+    return this.getById(sessionId);
   }
 
-  /**
-   * Handle decision node
-   */
-  async handleDecision(
-    sessionId: string,
-    nodeId: string,
-    choice: string
-  ): Promise<ISession | null> {
-    return Session.findByIdAndUpdate(
-      sessionId,
-      {
-        $set: {
-          'decisionNodes.$[elem].chosen': choice,
-          'decisionNodes.$[elem].timestamp': new Date(),
-        },
-      },
-      {
-        new: true,
-        arrayFilters: [{ 'elem.nodeId': nodeId }],
-      }
-    );
+  async handleDecision(sessionId: string, nodeId: string, choice: string): Promise<any | null> {
+    const db = await getDB();
+    const session = getOne(db, 'SELECT decision_nodes FROM sessions WHERE id = ?', [sessionId]);
+    if (!session) return null;
+    const nodes = JSON.parse(session.decision_nodes as string);
+    const node = nodes.find((n: any) => n.nodeId === nodeId);
+    if (node) {
+      node.chosen = choice;
+      node.timestamp = new Date().toISOString();
+    }
+    run(db, "UPDATE sessions SET decision_nodes = ?, updated_at = datetime('now') WHERE id = ?",
+      [JSON.stringify(nodes), sessionId]);
+    saveDB(db);
+    return this.getById(sessionId);
   }
 }
 

@@ -1,11 +1,9 @@
-// Auth Service
+// Auth Service - SQLite version
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { User, IUser } from '../models/User';
-import { Team } from '../models/Team';
+import bcrypt from 'bcrypt';
 import { config } from '../utils/config';
-import { createAuditLog } from '../models/AuditLog';
-import { AuthRequest } from '../middleware/auth.middleware';
+import { getDB, getOne, run, genId, saveDB } from '../utils/db';
 
 export interface TokenPair {
   accessToken: string;
@@ -25,133 +23,78 @@ export interface LoginInput {
 }
 
 export class AuthService {
-  /**
-   * Register a new user
-   */
-  async register(input: RegisterInput, ipAddress?: string): Promise<{ user: IUser; tokens: TokenPair }> {
+  async register(input: RegisterInput, ipAddress?: string): Promise<{ user: any; tokens: TokenPair }> {
     const { email, password, name, inviteCode } = input;
+    const db = await getDB();
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      throw new Error('Email already registered');
-    }
+    const existing = getOne(db, 'SELECT id FROM users WHERE email = ?', [email]);
+    if (existing) throw new Error('Email already registered');
 
     // Find or create team
     let teamId: string;
     if (inviteCode) {
-      const team = await Team.findOne({ inviteCode });
-      if (!team) {
-        throw new Error('Invalid invite code');
-      }
-      teamId = team._id.toString();
+      const team = getOne(db, 'SELECT id FROM teams WHERE invite_code = ?', [inviteCode]);
+      if (!team) throw new Error('Invalid invite code');
+      teamId = team.id as string;
     } else {
-      // Create new team for first user
+      teamId = genId();
       const teamCode = crypto.randomBytes(8).toString('hex');
-      const team = await Team.create({
-        name: `${name}'s Team`,
-        inviteCode: teamCode,
-      });
-      teamId = team._id.toString();
+      run(db, 'INSERT INTO teams (id, name, invite_code) VALUES (?, ?, ?)', [teamId, `${name}'s Team`, teamCode]);
     }
 
     // Create user
-    const user = await User.create({
-      email,
-      passwordHash: password, // Will be hashed by pre-save hook
-      name,
-      role: 'admin', // First user is admin
-      teamId,
-    });
+    const userId = genId();
+    const passwordHash = await bcrypt.hash(password, 12);
+    run(db, 'INSERT INTO users (id, email, password_hash, name, role, team_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [userId, email, passwordHash, name, 'admin', teamId]);
 
-    const tokens = this.generateTokenPair(user._id.toString(), user.role, teamId);
+    const tokens = this.generateTokenPair(userId, 'admin', teamId);
+    saveDB(db);
 
-    // Audit log
-    await createAuditLog(user._id, 'user.register', 'User', user._id, { email }, ipAddress);
-
-    return { user, tokens };
+    return {
+      user: { id: userId, email, name, role: 'admin', teamId },
+      tokens,
+    };
   }
 
-  /**
-   * Login user
-   */
-  async login(input: LoginInput, ipAddress?: string): Promise<{ user: IUser; tokens: TokenPair }> {
+  async login(input: LoginInput, ipAddress?: string): Promise<{ user: any; tokens: TokenPair }> {
     const { email, password } = input;
+    const db = await getDB();
 
-    const user = await User.findOne({ email });
-    if (!user) {
-      throw new Error('Invalid email or password');
-    }
+    const user = getOne(db, 'SELECT * FROM users WHERE email = ?', [email]);
+    if (!user) throw new Error('Invalid email or password');
+    if (!user.is_active) throw new Error('Account is deactivated');
 
-    if (!user.isActive) {
-      throw new Error('Account is deactivated');
-    }
-
-    const isValid = await user.comparePassword(password);
-    if (!isValid) {
-      throw new Error('Invalid email or password');
-    }
+    const isValid = await bcrypt.compare(password, user.password_hash as string);
+    if (!isValid) throw new Error('Invalid email or password');
 
     // Update last login
-    user.lastLogin = new Date();
-    await user.save();
+    run(db, 'UPDATE users SET last_login = datetime(\'now\') WHERE id = ?', [user.id]);
+    saveDB(db);
 
-    const tokens = this.generateTokenPair(
-      user._id.toString(),
-      user.role,
-      user.teamId.toString()
-    );
+    const tokens = this.generateTokenPair(user.id as string, user.role as string, user.team_id as string);
 
-    await createAuditLog(user._id, 'user.login', 'User', user._id, { email }, ipAddress);
-
-    return { user, tokens };
+    return {
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, teamId: user.team_id },
+      tokens,
+    };
   }
 
-  /**
-   * Refresh access token
-   */
   async refreshToken(refreshToken: string): Promise<TokenPair> {
-    try {
-      const decoded = jwt.verify(refreshToken, config.jwtSecret) as {
-        userId: string;
-        type: string;
-      };
+    const decoded = jwt.verify(refreshToken, config.jwtSecret) as { userId: string; type: string };
+    if (decoded.type !== 'refresh') throw new Error('Invalid token type');
 
-      if (decoded.type !== 'refresh') {
-        throw new Error('Invalid token type');
-      }
+    const db = await getDB();
+    const user = getOne(db, 'SELECT * FROM users WHERE id = ? AND is_active = 1', [decoded.userId]);
+    if (!user) throw new Error('User not found');
 
-      const user = await User.findById(decoded.userId);
-      if (!user || !user.isActive) {
-        throw new Error('User not found');
-      }
-
-      return this.generateTokenPair(
-        user._id.toString(),
-        user.role,
-        user.teamId.toString()
-      );
-    } catch {
-      throw new Error('Invalid refresh token');
-    }
+    return this.generateTokenPair(user.id as string, user.role as string, user.team_id as string);
   }
 
-  /**
-   * Generate JWT token pair
-   */
   private generateTokenPair(userId: string, role: string, teamId: string): TokenPair {
-    const accessToken = jwt.sign(
-      { userId, role, teamId, type: 'access' },
-      config.jwtSecret,
-      { expiresIn: '15m' }
-    );
-
-    const refreshToken = jwt.sign(
-      { userId, type: 'refresh' },
-      config.jwtSecret,
-      { expiresIn: '7d' }
-    );
-
+    const accessToken = jwt.sign({ userId, role, teamId, type: 'access' }, config.jwtSecret, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId, type: 'refresh' }, config.jwtSecret, { expiresIn: '7d' });
     return { accessToken, refreshToken };
   }
 }

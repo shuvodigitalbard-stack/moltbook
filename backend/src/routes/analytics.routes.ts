@@ -1,4 +1,4 @@
-// Analytics Routes
+// Analytics Routes - SQLite version
 import { Router, Response } from 'express';
 import { analyticsService } from '../services/analytics.service';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
@@ -9,7 +9,7 @@ router.use(authenticate);
 router.get('/usage', async (req: AuthRequest, res: Response) => {
   try {
     const days = parseInt(req.query.days as string) || 30;
-    const analytics = await analyticsService.getUsage(req.user!.teamId.toString(), days);
+    const analytics = await analyticsService.getUsage(req.user!.team_id, days);
     res.json(analytics);
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed' });

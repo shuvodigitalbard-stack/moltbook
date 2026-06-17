@@ -1,4 +1,4 @@
-// Session Routes
+// Session Routes - SQLite version
 import { Router, Response } from 'express';
 import { sessionService } from '../services/session.service';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
@@ -9,7 +9,7 @@ router.use(authenticate);
 
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
-    const sessions = await sessionService.getByUser(req.userId!, 20);
+    const sessions = await sessionService.getByUser(req.user!.id, 20);
     res.json({ sessions });
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed' });
@@ -18,7 +18,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
 router.get('/active', async (req: AuthRequest, res: Response) => {
   try {
-    const sessions = await sessionService.getActive(req.user!.teamId.toString());
+    const sessions = await sessionService.getActive(req.user!.team_id);
     res.json({ sessions });
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed' });
@@ -45,12 +45,7 @@ router.post('/:id/inject', rateLimiter(20, 60000), async (req: AuthRequest, res:
       res.status(400).json({ error: 'Injection text required' });
       return;
     }
-    const session = await sessionService.injectPrompt(
-      req.params.id,
-      injectionText,
-      injectionRole || 'system',
-      req.userId!
-    );
+    const session = await sessionService.injectPrompt(req.params.id, injectionText, injectionRole || 'system', req.user!.id);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -82,7 +77,7 @@ router.put('/:id/memory', async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json({ memory: session.memory });
+    res.json({ memory: JSON.parse(session.memory) });
   } catch (error: unknown) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed' });
   }
@@ -95,7 +90,7 @@ router.get('/:id/context', async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json({ messages: session.messages });
+    res.json({ messages: JSON.parse(session.messages) });
   } catch (error: unknown) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed' });
   }
@@ -113,7 +108,7 @@ router.put('/:id/context', async (req: AuthRequest, res: Response) => {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    res.json({ messages: session.messages });
+    res.json({ messages: JSON.parse(session.messages) });
   } catch (error: unknown) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed' });
   }
