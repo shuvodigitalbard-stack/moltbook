@@ -10,6 +10,7 @@ import {
   Settings,
   LogOut,
   Zap,
+  Sparkles,
 } from 'lucide-react'
 
 const navItems = [
@@ -20,6 +21,7 @@ const navItems = [
   { to: '/experiments', icon: FlaskConical, label: 'Experiments' },
   { to: '/analytics', icon: BarChart3, label: 'Analytics' },
   { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/builder', icon: Sparkles, label: 'Agent Builder' },
 ]
 
 export default function Sidebar() {

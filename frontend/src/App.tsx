@@ -12,6 +12,7 @@ import Tasks from './pages/Tasks'
 import Experiments from './pages/Experiments'
 import Analytics from './pages/Analytics'
 import Settings from './pages/Settings'
+import AgentBuilder from './pages/AgentBuilder'
 
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="/experiments" element={<Experiments />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/builder" element={<AgentBuilder />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
