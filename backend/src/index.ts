@@ -35,12 +35,19 @@ const io = new SocketServer(httpServer, {
 
 // Middleware
 app.use(helmet());
+const allowedOrigins = ['https://moltbook-frontend.onrender.com', 'http://localhost:5173'];
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
 app.use(morgan('dev'));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Make io accessible to routes
