@@ -202,9 +202,13 @@ export function run(db: SQLDatabase, sql: string, params: any[] = []): void {
   stmt.free();
 }
 
-// Helper: save DB to disk
+// Helper: save DB to disk (non-fatal on read-only fs)
 export function saveDB(db: SQLDatabase): void {
-  const data = db.export();
-  const buffer = Buffer.from(data);
-  fs.writeFileSync(DB_PATH, buffer);
+  try {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  } catch (e) {
+    // Ignore write errors on read-only filesystems (e.g. Render free tier)
+  }
 }
